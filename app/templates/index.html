@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ReAct Agent智能系统</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <!-- Markdown渲染库 -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/github.min.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/highlight.min.js"></script>
+    <!-- LaTeX数学公式渲染 -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+    <link href="/static/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <!-- 侧边栏 -->
+    <div class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <h5><i class="fas fa-brain me-2"></i>ReAct Agent</h5>
+        </div>
+        
+        <!-- 导航菜单 -->
+        <div class="sidebar-nav">
+            <a href="#" class="nav-item active" onclick="switchView('chat')">
+                <i class="fas fa-comments"></i>
+                <span>Agent对话</span>
+            </a>
+            <a href="#" class="nav-item" onclick="switchView('kb-management')">
+                <i class="fas fa-database"></i>
+                <span>资源管理</span>
+            </a>
+        </div>
+        
+        <!-- 知识库列表（问答用） -->
+        <div class="kb-list-sidebar">
+            <div class="sidebar-section-title">我的知识库</div>
+            <div id="kb-list-sidebar" class="kb-list-container">
+                <!-- 知识库列表将在这里动态生成 -->
+            </div>
+        </div>
+        
+        <!-- 系统状态 -->
+        <div class="sidebar-footer">
+            <span id="system-status" class="small">
+                <i class="fas fa-circle text-success"></i> 系统正常
+            </span>
+        </div>
+    </div>
+    
+    <!-- 主内容区 -->
+    <div class="main-content" id="main-content">
+        <!-- 问答视图 -->
+        <div class="view-container" id="chat-view">
+            <!-- 顶部栏 -->
+            <div class="chat-header">
+                <button class="btn btn-link toggle-sidebar-btn" onclick="toggleSidebar()">
+                    <i class="fas fa-bars"></i>
+                </button>
+                <h6 class="mb-0">Agent对话</h6>
+                <button class="btn btn-sm btn-outline-secondary" onclick="clearChat()">
+                    <i class="fas fa-broom"></i> 清空
+                </button>
+            </div>
+            
+            <!-- 聊天消息区域 -->
+            <div id="chat-messages" class="chat-messages-container">
+                <div class="welcome-message">
+                    <div class="text-center">
+                        <i class="fas fa-robot fa-3x mb-3 text-primary"></i>
+                        <h5>欢迎使用 ReAct Agent</h5>
+                        <p class="text-muted">无需手动选择知识库，可开始提问</p>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 输入区域 -->
+            <div class="chat-input-container">
+                <div class="chat-input-wrapper">
+                    <button class="btn btn-link file-select-btn" id="file-select-btn" onclick="toggleFileSelector()" title="选择文件">
+                        <i class="fas fa-paperclip"></i>
+                    </button>
+                    <textarea id="question-input" 
+                              class="chat-input" 
+                              rows="1" 
+                              placeholder="请输入您的问题..."
+                              onkeypress="handleEnterKey(event)"
+                              oninput="autoResize(this)"></textarea>
+                    <button class="btn btn-primary send-btn" onclick="sendQuestion()" id="send-btn">
+                        <i class="fas fa-paper-plane"></i>
+                    </button>
+                    <button class="btn btn-danger send-btn" onclick="stopGeneration()" id="stop-btn" style="display: none;" title="停止生成">
+                        <i class="fas fa-stop"></i>
+                    </button>
+                </div>
+                <!-- 文件选择器面板 -->
+                <div id="file-selector-panel" class="file-selector-panel" style="display: none;">
+                    <div class="file-selector-header">
+                        <span><i class="fas fa-file"></i> 选择文件</span>
+                        <button class="btn btn-sm btn-link" onclick="toggleFileSelector()">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+                    <div class="file-selector-body">
+                        <div class="file-list" id="available-files-list">
+                            <!-- 可用文件列表 -->
+                        </div>
+                        <div class="file-upload-section">
+                            <button class="btn btn-sm btn-outline-primary" onclick="triggerFileUpload()">
+                                <i class="fas fa-upload"></i> 上传新文件
+                            </button>
+                            <input type="file" id="file-upload-input" style="display: none;" onchange="handleFileUpload(event)" accept=".csv,.xlsx,.xls">
+                        </div>
+                    </div>
+                    <div class="selected-files-section" id="selected-files-section">
+                        <div class="selected-files-header">已选择的文件：</div>
+                        <div id="selected-files-list" class="selected-files-list"></div>
+                    </div>
+                </div>
+                <div class="chat-options">
+                    <label class="form-check-label small">
+                        <input class="form-check-input" type="checkbox" id="agentic-mode" checked>
+                        <i class="fas fa-robot"></i> Agent模式
+                    </label>
+                    <label class="form-check-label small ms-3" title="Lite模式：简化的并行调度（Plan → Execute → Answer），速度更快">
+                        <input class="form-check-input" type="checkbox" id="use-lite-mode">
+                        <i class="fas fa-bolt"></i> Lite模式 <span class="badge bg-info">快速</span>
+                    </label>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 资源管理视图 -->
+        <div class="view-container" id="kb-management-view" style="display: none;">
+            <div class="kb-management-container">
+                <div class="kb-header">
+                    <h4><i class="fas fa-database me-2"></i>资源管理</h4>
+                    <button class="btn btn-primary" onclick="showCreateKbModal()">
+                        <i class="fas fa-plus me-1"></i> 创建知识库
+                    </button>
+                </div>
+                
+                <!-- 标签页导航 -->
+                <ul class="nav nav-tabs mt-3" id="kb-tabs" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="kb-list-tab" data-bs-toggle="tab" data-bs-target="#kb-list-pane" type="button" role="tab">
+                            <i class="fas fa-database"></i> 知识库
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="file-management-tab" data-bs-toggle="tab" data-bs-target="#file-management-pane" type="button" role="tab">
+                            <i class="fas fa-file-alt"></i> 文件管理
+                        </button>
+                    </li>
+                </ul>
+                
+                <!-- 标签页内容 -->
+                <div class="tab-content mt-3" id="kb-tabs-content">
+                    <!-- 知识库标签页 -->
+                    <div class="tab-pane fade show active" id="kb-list-pane" role="tabpanel">
+                        <div class="row">
+                            <!-- 知识库列表 -->
+                            <div class="col-md-8">
+                        <div class="card">
+                            <div class="card-header bg-white">
+                                <h6 class="mb-0">我的知识库</h6>
+                            </div>
+                            <div class="card-body p-0">
+                                <div id="knowledge-bases-grid" class="kb-grid">
+                                    <!-- 知识库卡片将在这里动态生成 -->
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- 详情面板 -->
+                    <div class="col-md-4">
+                        <div class="card mb-3" id="kb-detail-panel">
+                            <div class="card-header bg-white">
+                                <h6 class="mb-0">统计信息</h6>
+                            </div>
+                            <div class="card-body">
+                                <div id="kb-details-content" class="text-muted text-center py-5">
+                                    <i class="fas fa-info-circle fa-2x mb-2"></i>
+                                    <p>请选择知识库查看详情</p>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- 文档列表 -->
+                        <div class="card" id="kb-documents-panel" style="display: none;">
+                            <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                                <h6 class="mb-0">文档列表</h6>
+                                <button class="btn btn-sm btn-primary" onclick="showUploadModalForKb(currentSelectedKbId)" id="quick-upload-btn">
+                                    <i class="fas fa-upload"></i>
+                                </button>
+                            </div>
+                            <div class="card-body p-0" style="max-height: 400px; overflow-y: auto;">
+                                <div id="kb-documents-list">
+                                    <!-- 文档列表将在这里动态生成 -->
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                    </div>
+                    
+                    <!-- 文件管理标签页 -->
+                    <div class="tab-pane fade" id="file-management-pane" role="tabpanel">
+                        <div class="card">
+                            <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                                <h6 class="mb-0">数据文件管理</h6>
+                                <button class="btn btn-sm btn-primary" onclick="showFileUploadModal()">
+                                    <i class="fas fa-upload me-1"></i> 上传文件
+                                </button>
+                            </div>
+                            <div class="card-body">
+                                <div id="file-management-list" class="file-management-list">
+                                    <!-- 文件列表将在这里动态生成 -->
+                                    <div class="text-center text-muted py-5">
+                                        <i class="fas fa-folder-open fa-3x mb-3"></i>
+                                        <p>暂无上传的文件</p>
+                                        <button class="btn btn-outline-primary" onclick="showFileUploadModal()">
+                                            <i class="fas fa-upload me-1"></i> 上传第一个文件
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 模态框保持不变 -->
+    <!-- 创建知识库模态框 -->
+    <div class="modal fade" id="createKbModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">创建知识库</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="create-kb-form">
+                        <div class="mb-3">
+                            <label for="kb-name" class="form-label">知识库名称 *</label>
+                            <input type="text" class="form-control" id="kb-name" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="kb-description" class="form-label">描述</label>
+                            <textarea class="form-control" id="kb-description" rows="3"></textarea>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" onclick="createKnowledgeBase()">创建</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 文件上传模态框（用于文件管理） -->
+    <div class="modal fade" id="fileUploadModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">上传数据文件</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="data-file-upload-form" enctype="multipart/form-data">
+                        <div class="mb-3">
+                            <label for="data-files-input" class="form-label">选择文件（支持多选）</label>
+                            <input type="file" class="form-control" id="data-files-input" 
+                                   accept=".csv,.xlsx" multiple>
+                            <div class="form-text">
+                                支持格式：CSV, XLSX，用于数据分析
+                            </div>
+                        </div>
+                        <div id="data-files-preview" class="mb-3" style="display: none;">
+                            <div class="border rounded p-3 bg-light">
+                                <h6>选中的文件:</h6>
+                                <div id="data-files-list"></div>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" onclick="uploadDataFiles()">
+                        <i class="fas fa-upload"></i> 上传
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 上传文档模态框 -->
+    <div class="modal fade" id="uploadModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">上传文档</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="upload-form" enctype="multipart/form-data">
+                        <div class="mb-3">
+                            <label for="file-input" class="form-label">选择文件（支持多选）</label>
+                            <input type="file" class="form-control" id="file-input" 
+                                   accept=".txt,.pdf,.docx,.xlsx,.md" multiple>
+                            <div class="form-text">
+                                支持格式：TXT, PDF, DOCX, XLSX, MD，最大16MB
+                            </div>
+                        </div>
+                        <div id="selected-files-list" class="mb-3" style="display: none;">
+                            <div class="border rounded p-3 bg-light">
+                                <h6>选中的文件:</h6>
+                                <div id="files-preview"></div>
+                            </div>
+                        </div>
+                        <div id="upload-progress" class="mb-3" style="display: none;">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <span>上传进度</span>
+                                <span id="progress-text">0%</span>
+                            </div>
+                            <div class="progress">
+                                <div class="progress-bar" id="progress-bar" role="progressbar" style="width: 0%"></div>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" id="cancel-upload">取消</button>
+                    <button type="button" class="btn btn-success" onclick="uploadDocuments()" id="upload-submit">
+                        <i class="fas fa-cloud-upload-alt"></i> 上传
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading 提示 -->
+    <div id="loading-overlay" class="loading-overlay" style="display: none;">
+        <div class="loading-spinner">
+            <div class="spinner-border text-primary" role="status"></div>
+            <div class="mt-2">处理中...</div>
+        </div>
+    </div>
+
+    <!-- 工具详情模态框 -->
+    <div class="modal fade" id="toolDetailsModal" tabindex="-1">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="toolDetailsTitle">
+                        <i class="fas fa-info-circle me-2"></i>详细信息
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body" id="toolDetailsBody">
+                    <!-- 详情内容将在这里动态生成 -->
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast 消息提示 -->
+    <div class="toast-container position-fixed top-0 end-0 p-3">
+        <div id="toast" class="toast" role="alert">
+            <div class="toast-header">
+                <i id="toast-icon" class="fas fa-info-circle me-2"></i>
+                <strong class="me-auto" id="toast-title">提示</strong>
+                <button type="button" class="btn-close" data-bs-dismiss="toast"></button>
+            </div>
+            <div class="toast-body" id="toast-body">消息内容</div>
+        </div>
+    </div>
+
+    <!-- 引入JavaScript库 -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

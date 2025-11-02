@@ -1,0 +1,72 @@
+# Python虚拟环境
+venv/
+env/
+.venv/
+ENV/
+
+# Python编译和缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# IDE和编辑器配置
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+
+# 环境变量和秘钥
+.env
+.env.local
+.env.*.local
+
+# 日志文件
+logs/
+*.log
+
+# 数据文件
+*.db
+*.sqlite
+*.sqlite3
+
+# Office文档
+*.xlsx
+*.docx
+*.xls
+*.doc
+
+# PDF文件
+*.pdf
+
+# CSV和文本数据
+*.csv
+*.txt
+
+# 上传和临时文件
+uploads/
+non_scanned_pdfs/
+agentic_file_box/
+
+# 第三方系统提示文件
+商业AI的system_prompts/
+
+# 测试覆盖率
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
