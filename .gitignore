@@ -38,6 +38,8 @@ logs/
 *.db
 *.sqlite
 *.sqlite3
+data/vectors/
+data/knowledge_base.db
 
 # Office文档
 *.xlsx
