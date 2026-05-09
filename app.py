@@ -2,8 +2,10 @@
 import os
 import time
 import json
+import logging
+import uuid
 from datetime import datetime
-from flask import Flask, render_template, send_from_directory, request, g
+from flask import Flask, render_template, send_from_directory, request, g, jsonify
 from flask_cors import CORS
 from config import Config
 
@@ -16,6 +18,11 @@ from app.routes.file_upload import file_upload_bp  # 文件上传功能
 
 # 导入 IO 日志系统
 from app.services.io_logger import enable_io_logging, disable_io_logging, get_logger
+
+# 导入安全工具
+from app.utils.security import redact_headers, redact_mapping
+
+logger = logging.getLogger(__name__)
 
 def create_app(enable_io_log=None):
     """
@@ -30,9 +37,26 @@ def create_app(enable_io_log=None):
     
     # 加载配置
     app.config.from_object(Config)
-    
-    # 启用CORS（跨域资源共享）
-    CORS(app)
+
+    # 启用CORS：仅允许显式白名单 origin。
+    # 通过环境变量 CORS_ORIGINS（逗号分隔）配置，未配置时只允许同源（不发 Access-Control-Allow-Origin）。
+    cors_origins_env = os.getenv('CORS_ORIGINS', '').strip()
+    if cors_origins_env:
+        cors_origins = [o.strip() for o in cors_origins_env.split(',') if o.strip()]
+    else:
+        # 默认仅允许本机访问，避免开放给任意 origin
+        cors_origins = ['http://127.0.0.1:5004', 'http://localhost:5004']
+    CORS(
+        app,
+        origins=cors_origins,
+        supports_credentials=False,
+        allow_headers=['Content-Type', 'X-API-Key'],
+        methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    )
+
+    # 启动时打印鉴权状态
+    if not os.getenv('APP_API_KEY'):
+        print('⚠️  APP_API_KEY 未设置，写操作接口当前无鉴权（生产环境必须设置）')
     
     # ==================== IO 日志配置 ====================
     # 从环境变量或参数决定是否启用 IO 日志
@@ -53,7 +77,7 @@ def create_app(enable_io_log=None):
     
     @app.before_request
     def log_api_request():
-        """记录 API 请求开始"""
+        """记录 API 请求开始（敏感 header / body 字段会被脱敏）"""
         # 只记录 API 路径
         if request.path.startswith('/api/'):
             g.request_start_time = time.time()
@@ -61,15 +85,15 @@ def create_app(enable_io_log=None):
                 'method': request.method,
                 'path': request.path,
                 'query_params': dict(request.args),
-                'headers': dict(request.headers),
+                'headers': redact_headers(request.headers),
                 'remote_addr': request.remote_addr
             }
-            
-            # 记录请求体（如果有）
+
+            # 记录请求体（如果有），敏感字段会被脱敏
             if request.is_json:
                 try:
-                    g.request_data['body'] = request.get_json()
-                except:
+                    g.request_data['body'] = redact_mapping(request.get_json(silent=True))
+                except Exception:
                     g.request_data['body'] = None
             elif request.data:
                 g.request_data['body'] = request.data.decode('utf-8', errors='ignore')[:1000]
@@ -125,21 +149,26 @@ def create_app(enable_io_log=None):
         """主页"""
         return render_template('index.html')
     
-    # API健康检查
+    # API健康检查（不泄漏模型/配置指纹）
     @app.route('/api/health')
     def health_check():
-        """健康检查接口"""
-        return {
-            'status': 'ok',
-            'message': 'RAG知识库系统运行正常',
-            'config': {
-                'embed_model': Config.EMBED_MODEL,
-                'chat_model': Config.CHAT_MODEL,
-                'embed_dimensions': Config.EMBED_DIMENSIONS,
-                'max_file_size': f"{Config.MAX_FILE_SIZE / 1024 / 1024}MB",
-                'allowed_extensions': list(Config.ALLOWED_EXTENSIONS)
-            }
-        }
+        """健康检查接口。只返回存活状态，避免暴露内部配置指纹。"""
+        return {'status': 'ok'}
+
+    # 统一错误处理：详细栈只进日志，前端只看到 error_id
+    @app.errorhandler(Exception)
+    def handle_uncaught(exc):
+        from werkzeug.exceptions import HTTPException
+        if isinstance(exc, HTTPException):
+            # 保留 Flask 原生 4xx 行为（404/405 等）
+            return exc
+        error_id = uuid.uuid4().hex[:12]
+        logger.exception('unhandled_error error_id=%s path=%s', error_id, request.path)
+        return jsonify({
+            'success': False,
+            'error': 'Internal server error',
+            'error_id': error_id
+        }), 500
     
     # 静态文件服务
     @app.route('/favicon.ico')
@@ -203,9 +232,12 @@ if __name__ == '__main__':
     print("="*80)
     
     try:
+        # 默认仅绑定本机环回；要监听公网请显式 export HOST=0.0.0.0
+        host = os.getenv('HOST', '127.0.0.1')
+        port = int(os.getenv('PORT', '5004'))
         app.run(
-            host='0.0.0.0',
-            port=5004,
+            host=host,
+            port=port,
             debug=Config.DEBUG,
             threaded=True
         )

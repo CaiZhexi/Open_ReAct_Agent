@@ -17,6 +17,7 @@ class DatabaseManager:
     def init_database(self):
         """初始化数据库表"""
         with sqlite3.connect(self.db_path) as conn:
+            conn.execute("PRAGMA foreign_keys = ON")
             cursor = conn.cursor()
             
             # 创建知识库表
@@ -93,8 +94,9 @@ class DatabaseManager:
             conn.commit()
     
     def get_connection(self):
-        """获取数据库连接"""
+        """获取数据库连接（启用 foreign_keys 约束以确保 ON DELETE CASCADE 生效）"""
         conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA foreign_keys = ON")
         conn.row_factory = sqlite3.Row  # 使结果可以通过列名访问
         return conn
     

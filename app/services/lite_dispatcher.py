@@ -72,6 +72,8 @@ class LiteDispatcherState:
     query: str
     kb_ids: List[int]
     kb_names: Dict[int, str] = field(default_factory=dict)
+    user_id: Optional[str] = None
+    request_id: Optional[str] = None
     
     # 工具调用计划
     planned_tools: List[ToolCall] = field(default_factory=list)
@@ -116,7 +118,7 @@ class LiteDispatcher:
         self.max_search = 1       # 知识库检索最多 1 次
         self.max_retry = 1        # 每个工具最多重试 1 次
     
-    def dispatch(self, query: str, kb_ids: List[int], kb_names: Dict[int, str] = None) -> Dict[str, Any]:
+    def dispatch(self, query: str, kb_ids: List[int], kb_names: Dict[int, str] = None, user_id: Optional[str] = None, request_id: Optional[str] = None) -> Dict[str, Any]:
         """
         主调度函数
         
@@ -131,14 +133,16 @@ class LiteDispatcher:
         state = LiteDispatcherState(
             query=query,
             kb_ids=kb_ids,
-            kb_names=kb_names or {}
+            kb_names=kb_names or {},
+            user_id=user_id,
+            request_id=request_id,
         )
-        
+
         try:
             # 阶段 1: Plan - 规划工具调用
             logger.info(f"[Lite Dispatcher] 阶段 1: Plan - 规划工具调用")
             self._plan_phase(state)
-            
+
             # 阶段 2: Execute - 并行执行工具
             logger.info(f"[Lite Dispatcher] 阶段 2: Execute - 并行执行 {len(state.planned_tools)} 个工具")
             self._execute_phase(state)
@@ -170,7 +174,7 @@ class LiteDispatcher:
                 'process_log': state.to_dict()
             }
     
-    def dispatch_stream(self, query: str, kb_ids: List[int], kb_names: Dict[int, str] = None, request_id: str = None):
+    def dispatch_stream(self, query: str, kb_ids: List[int], kb_names: Dict[int, str] = None, request_id: str = None, user_id: Optional[str] = None):
         """
         流式调度函数 - 生成器模式
         
@@ -191,9 +195,11 @@ class LiteDispatcher:
         state = LiteDispatcherState(
             query=query,
             kb_ids=kb_ids,
-            kb_names=kb_names or {}
+            kb_names=kb_names or {},
+            user_id=user_id,
+            request_id=request_id,
         )
-        
+
         try:
             # 发送开始事件
             yield {'event': 'start', 'data': {}}
@@ -438,13 +444,13 @@ class LiteDispatcher:
     def _execute_phase(self, state: LiteDispatcherState):
         """
         阶段 2: Execute - 并行执行所有工具
-        
+
         使用线程池并行执行，提高效率
         """
         if not state.planned_tools:
             logger.info("[Execute] 无需执行工具")
             return
-        
+
         # 使用线程池并行执行
         with ThreadPoolExecutor(max_workers=min(len(state.planned_tools), 5)) as executor:
             # 提交所有任务
@@ -485,9 +491,13 @@ class LiteDispatcher:
             
             # 根据工具类型执行
             if tool_call.tool == 'python_code':
-                # Python代码执行
+                # Python代码执行（state.user_id/request_id 用于速率限制和审计）
                 query = args.get('query', '')
-                result_data = execute_python_code(query)
+                result_data = execute_python_code(
+                    query,
+                    user_id=state.user_id,
+                    request_id=state.request_id,
+                )
                 
                 execution_time = time.time() - start_time
                 

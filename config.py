@@ -1,16 +1,48 @@
 """项目配置文件"""
 import os
+import secrets
 from typing import Dict
 from dotenv import load_dotenv
 
 # 加载环境变量
 load_dotenv()
 
+
+_DEFAULT_SECRET_MARKERS = {
+    '', 'dev-secret-key-change-in-production',
+    'your-secret-key-change-in-production',
+    'change-me', 'changeme', 'secret'
+}
+
+
+def _resolve_secret_key() -> str:
+    """解析 SECRET_KEY。
+    - 若显式设置且足够强（≥32 字符且不在默认占位符集合），直接返回。
+    - 否则：生产模式（DEV_MODE 未开启）拒绝启动；开发模式打印警告并生成随机 key。
+    """
+    raw = os.getenv('SECRET_KEY', '').strip()
+    dev_mode = os.getenv('DEV_MODE', 'false').lower() == 'true'
+    is_weak = (not raw) or (raw in _DEFAULT_SECRET_MARKERS) or (len(raw) < 32)
+    if is_weak:
+        if dev_mode:
+            generated = secrets.token_urlsafe(48)
+            print('⚠️  SECRET_KEY 未设置或过弱，DEV_MODE 下已生成临时随机 key。'
+                  '生产环境必须通过环境变量设置长度≥32的强随机 key。')
+            return generated
+        raise RuntimeError(
+            'SECRET_KEY 必须显式设置为长度≥32 的强随机字符串。'
+            '生成示例：python -c "import secrets; print(secrets.token_urlsafe(48))"。'
+            '如需在开发环境启动，请 export DEV_MODE=true。'
+        )
+    return raw
+
+
 class Config:
     """配置类"""
     # Flask配置
-    SECRET_KEY = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
-    DEBUG = os.getenv('FLASK_DEBUG', 'True').lower() == 'true'
+    SECRET_KEY = _resolve_secret_key()
+    # DEBUG 默认 False；开发本地可显式 export FLASK_DEBUG=true
+    DEBUG = os.getenv('FLASK_DEBUG', 'False').lower() == 'true'
     
     # ==================== Embedding 模型配置 ====================
     # 功能：文本向量化，用于知识库检索
@@ -143,10 +175,17 @@ class Config:
     PYTHON_EXECUTOR_MAX_FILE_SIZE_MB = 10  # 最大文件大小（MB）
     
     # HSL执行器安全配置（High-Security Level）
-    PYTHON_EXECUTOR_SANDBOX_ALLOW_OPEN = True  # 是否允许在沙箱中使用open()（上传文件功能需要）
-    PYTHON_EXECUTOR_SANDBOX_ALLOW_WRITE = False  # 是否允许在沙箱中写入文件（默认禁用）
+    # 允许 open()，但 v2_agent 会把 uploads 文件复制进 sandbox_dir 后再执行，
+    # 所以 sandbox 内的 open 只能访问已复制进来的副本。
+    PYTHON_EXECUTOR_SANDBOX_ALLOW_OPEN = os.getenv('PYTHON_EXECUTOR_SANDBOX_ALLOW_OPEN', 'true').lower() == 'true'
+    PYTHON_EXECUTOR_SANDBOX_ALLOW_WRITE = os.getenv('PYTHON_EXECUTOR_SANDBOX_ALLOW_WRITE', 'false').lower() == 'true'
     PYTHON_EXECUTOR_SANITIZE_ENV = True  # 是否净化环境变量（提高隔离性）
     PYTHON_EXECUTOR_RECURSION_LIMIT = 1000  # 递归深度上限（防止栈溢出）
+    # 是否禁止 Python 执行器子进程发起网络请求（M1 SSRF 防护）
+    PYTHON_EXECUTOR_DISABLE_NETWORK = os.getenv('PYTHON_EXECUTOR_DISABLE_NETWORK', 'true').lower() == 'true'
+    # 单次执行允许复制进沙箱的最大文件数 / 单文件最大字节数
+    PYTHON_EXECUTOR_SANDBOX_MAX_FILES = int(os.getenv('PYTHON_EXECUTOR_SANDBOX_MAX_FILES', '32'))
+    PYTHON_EXECUTOR_SANDBOX_MAX_FILE_BYTES = int(os.getenv('PYTHON_EXECUTOR_SANDBOX_MAX_FILE_BYTES', str(64 * 1024 * 1024)))
     
     # 执行器监控和安全配置
     PYTHON_EXECUTOR_ENABLE_MONITORING = True  # 启用执行监控

@@ -1,6 +1,10 @@
 """
 IO Logger - 记录所有 LLM 和工具的输入输出
 在 API 客户端层面拦截请求和响应，记录完整的载荷信息
+
+⚠️ 安全：所有写入磁盘的载荷会先经 `app.utils.security.redact_mapping` 脱敏，
+默认还会丢弃 `raw_request` / `raw_response` 字段（仅保留摘要），可通过
+环境变量 IO_LOG_KEEP_RAW=true 显式开启（强烈不建议在生产开启）。
 """
 import json
 import time
@@ -9,6 +13,12 @@ from datetime import datetime
 from typing import Dict, Any, List, Optional
 from functools import wraps
 import threading
+
+from app.utils.security import redact_mapping, redact_headers
+
+
+def _keep_raw_payload() -> bool:
+    return os.getenv('IO_LOG_KEEP_RAW', 'false').lower() == 'true'
 
 
 class IOLogger:
@@ -167,25 +177,24 @@ class IOLogger:
             'timestamp': datetime.now().isoformat(),
             'phase': phase,
             'duration': round(duration, 3),
-            
-            # 请求信息
+
+            # 请求信息（messages 经过递归脱敏）
             'request': {
                 'model': model,
                 'temperature': temperature,
                 'max_tokens': max_tokens,
                 'stream': request_payload.get('stream', False),
-                'messages': messages,
+                'messages': redact_mapping(messages),
                 'message_count': len(messages),
             },
-            
+
             # 响应信息
             'response': {
                 'content': response_content,
                 'content_length': len(response_content),
                 'error': error,
-                'raw_response': response_payload if error else None
             },
-            
+
             # 性能统计
             'performance': {
                 'duration_ms': round(duration * 1000, 2),
@@ -193,11 +202,12 @@ class IOLogger:
                 'estimated_output_tokens': len(response_content) // 4,
                 'usage': usage  # 如果 API 返回了 usage 信息
             },
-            
-            # 原始载荷（用于调试）
-            'raw_request': request_payload,
-            'raw_response': response_payload
         }
+
+        # 只有显式开启 IO_LOG_KEEP_RAW=true 时才落盘原始载荷（仍然脱敏）
+        if _keep_raw_payload():
+            log_entry['raw_request'] = redact_mapping(request_payload)
+            log_entry['raw_response'] = redact_mapping(response_payload)
         
         self._write_log(log_entry)
     
@@ -272,11 +282,11 @@ class IOLogger:
             'request_id': self.current_request_id,  # 关联到当前请求
             'timestamp': datetime.now().isoformat(),
             'duration': round(duration, 3),
-            
-            'request': request_payload,
-            'response': response_payload,
+
+            'request': redact_mapping(request_payload),
+            'response': redact_mapping(response_payload),
             'error': error,
-            
+
             'performance': {
                 'duration_ms': round(duration * 1000, 2),
                 'request_size_bytes': len(json.dumps(request_payload, ensure_ascii=False)),

@@ -8,6 +8,8 @@ import logging
 from werkzeug.utils import secure_filename
 from datetime import datetime
 
+from app.utils.security import require_api_key, safe_basename, ensure_within, make_error_response
+
 file_upload_bp = Blueprint('file_upload', __name__)
 logger = logging.getLogger(__name__)
 
@@ -25,6 +27,26 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
+# 简易魔数校验：按扩展名检查前几字节是否匹配，阻断伪造扩展名上传
+_MAGIC_PREFIXES = {
+    'xlsx': [b'PK\x03\x04', b'PK\x05\x06', b'PK\x07\x08'],  # xlsx 本质是 zip
+    'csv': None,  # CSV 无固定魔数，按扩展名放行；由后续解析兜底
+}
+
+
+def _magic_ok(file_obj, ext: str) -> bool:
+    """读取文件头做粗粒度魔数校验，读完后把流指针复位。"""
+    prefixes = _MAGIC_PREFIXES.get(ext.lower())
+    if prefixes is None:
+        return True
+    try:
+        head = file_obj.stream.read(8)
+        file_obj.stream.seek(0)
+    except Exception:
+        return True  # 流不支持 seek，放行由后续解析兜底
+    return any(head.startswith(p) for p in prefixes)
+
+
 def get_file_size_str(size_bytes):
     """将字节转换为可读的文件大小"""
     for unit in ['B', 'KB', 'MB', 'GB']:
@@ -35,6 +57,7 @@ def get_file_size_str(size_bytes):
 
 
 @file_upload_bp.route('/upload_files', methods=['POST'])
+@require_api_key
 def upload_files():
     """
     上传文件接口
@@ -69,21 +92,35 @@ def upload_files():
         
         for file in files:
             if file and allowed_file(file.filename):
-                # 使用安全的文件名
-                filename = secure_filename(file.filename)
-                
+                # 使用安全的文件名：werkzeug 规范化 + 本地二次 basename
+                filename = safe_basename(secure_filename(file.filename))
+                if not filename:
+                    return jsonify({'success': False, 'error': '无效的文件名'}), 400
+
+                # 魔数校验，拒绝伪造扩展名
+                ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+                if not _magic_ok(file, ext):
+                    return jsonify({
+                        'success': False,
+                        'error': f'文件 {file.filename} 内容与扩展名 .{ext} 不匹配'
+                    }), 400
+
                 # 如果文件名重复，添加时间戳
-                name, ext = os.path.splitext(filename)
+                name, ext_with_dot = os.path.splitext(filename)
                 unique_filename = filename
                 counter = 1
-                
+
                 while os.path.exists(os.path.join(UPLOAD_FOLDER, unique_filename)):
                     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                    unique_filename = f"{name}_{timestamp}_{counter}{ext}"
+                    unique_filename = f"{name}_{timestamp}_{counter}{ext_with_dot}"
                     counter += 1
-                
+
                 filepath = os.path.join(UPLOAD_FOLDER, unique_filename)
+                # 最终兜底：确保 filepath 仍在 UPLOAD_FOLDER 内
+                if not ensure_within(UPLOAD_FOLDER, filepath):
+                    return jsonify({'success': False, 'error': '非法路径'}), 400
                 file.save(filepath)
+                ext = ext_with_dot
                 
                 # 获取文件信息
                 file_size = os.path.getsize(filepath)
@@ -111,11 +148,7 @@ def upload_files():
         })
     
     except Exception as e:
-        logger.error(f"文件上传失败: {e}")
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return make_error_response(e, public_message='文件上传失败')
 
 
 @file_upload_bp.route('/list_files', methods=['GET'])
@@ -156,14 +189,11 @@ def list_files():
         })
     
     except Exception as e:
-        logger.error(f"获取文件列表失败: {e}")
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return make_error_response(e, public_message='获取文件列表失败')
 
 
 @file_upload_bp.route('/delete_file/<filename>', methods=['DELETE'])
+@require_api_key
 def delete_file(filename):
     """
     删除指定文件
@@ -179,9 +209,13 @@ def delete_file(filename):
     """
     try:
         # 安全检查：防止路径遍历攻击
-        filename = secure_filename(filename)
+        filename = safe_basename(secure_filename(filename))
+        if not filename:
+            return jsonify({'success': False, 'error': '无效的文件名'}), 400
         filepath = os.path.join(UPLOAD_FOLDER, filename)
-        
+        if not ensure_within(UPLOAD_FOLDER, filepath):
+            return jsonify({'success': False, 'error': '非法路径'}), 400
+
         if not os.path.exists(filepath):
             return jsonify({
                 'success': False,
@@ -204,14 +238,11 @@ def delete_file(filename):
         })
     
     except Exception as e:
-        logger.error(f"文件删除失败: {e}")
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return make_error_response(e, public_message='文件删除失败')
 
 
 @file_upload_bp.route('/clear_files', methods=['POST'])
+@require_api_key
 def clear_files():
     """
     清空所有上传的文件
@@ -239,11 +270,7 @@ def clear_files():
         })
     
     except Exception as e:
-        logger.error(f"清空文件失败: {e}")
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return make_error_response(e, public_message='清空文件失败')
 
 
 def get_upload_folder():

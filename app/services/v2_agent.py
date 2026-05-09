@@ -80,6 +80,8 @@ class AgentContext:
     kb_names: Dict[int, str] = field(default_factory=dict)  # 知识库ID到名称的映射
     conversation_history: List[Dict[str, str]] = field(default_factory=list)  # 对话历史
     selected_files: List[str] = field(default_factory=list)  # 用户选中的文件列表
+    user_id: Optional[str] = None  # 用户标识（用于速率限制 / 审计）
+    request_id: Optional[str] = None  # 请求标识（用于审计）
     
     # 任务分解（新增）
     subtasks: List[SubTask] = field(default_factory=list)
@@ -235,15 +237,26 @@ class AgentContext:
         return "\n".join(lines)
     
     def get_evidence_detail(self) -> str:
-        """获取证据详情（用于生成答案）"""
-        lines = []
+        """获取证据详情（用于生成答案）。
+        外部来源（知识库/网络）的原文会被包裹进 <untrusted_source>，
+        防止 prompt injection 篡改 Agent 行为。
+        """
+        from app.utils.security import quote_untrusted, UNTRUSTED_INSTRUCTION
+        lines = [UNTRUSTED_INSTRUCTION]
+        # 这些来源被视为外部不受信任内容
+        untrusted_categories = {'kb_retrieval', 'web_search', 'search', 'knowledge_base'}
         for category, items in self.evidence.items():
             lines.append(f"\n【{category}】")
+            wrap = category in untrusted_categories
             for i, item in enumerate(items, 1):
                 if isinstance(item, dict):
-                    lines.append(f"{i}. {json.dumps(item, ensure_ascii=False, indent=2)}")
+                    raw = json.dumps(item, ensure_ascii=False, indent=2)
                 else:
-                    lines.append(f"{i}. {str(item)}")
+                    raw = str(item)
+                if wrap:
+                    lines.append(f"{i}. {quote_untrusted(raw, max_len=6000)}")
+                else:
+                    lines.append(f"{i}. {raw}")
         return "\n".join(lines)
     
     def can_continue(self) -> bool:
@@ -369,7 +382,7 @@ class V2Agent:
         self.model_name = "ERNIE-Speed-128K"
         self.temperature = 0.1
     
-    def run(self, query: str, kb_ids: List[int] = None, kb_names: Dict[int, str] = None, history: List[Dict[str, str]] = None, selected_files: List[str] = None) -> Dict[str, Any]:
+    def run(self, query: str, kb_ids: List[int] = None, kb_names: Dict[int, str] = None, history: List[Dict[str, str]] = None, selected_files: List[str] = None, user_id: Optional[str] = None, request_id: Optional[str] = None) -> Dict[str, Any]:
         """
         运行Agent（非流式）
         
@@ -450,11 +463,13 @@ class V2Agent:
         
         # 初始化上下文
         context = AgentContext(
-            user_query=query, 
+            user_query=query,
             kb_ids=kb_ids or [],
             kb_names=kb_names or {},
             conversation_history=history or [],
-            selected_files=selected_files or []
+            selected_files=selected_files or [],
+            user_id=user_id,
+            request_id=request_id,
         )
         
         # 主循环
@@ -529,7 +544,7 @@ class V2Agent:
             'process_log': context.to_dict()
         }
     
-    def run_stream(self, query: str, kb_ids: List[int] = None, kb_names: Dict[int, str] = None, history: List[Dict[str, str]] = None, selected_files: List[str] = None) -> Generator[Dict[str, Any], None, None]:
+    def run_stream(self, query: str, kb_ids: List[int] = None, kb_names: Dict[int, str] = None, history: List[Dict[str, str]] = None, selected_files: List[str] = None, user_id: Optional[str] = None, request_id: Optional[str] = None) -> Generator[Dict[str, Any], None, None]:
         """
         运行Agent（流式）
         
@@ -635,11 +650,13 @@ class V2Agent:
         
         # 初始化上下文
         context = AgentContext(
-            user_query=query, 
+            user_query=query,
             kb_ids=kb_ids or [],
             kb_names=kb_names or {},
             conversation_history=history or [],
-            selected_files=selected_files or []
+            selected_files=selected_files or [],
+            user_id=user_id,
+            request_id=request_id,
         )
         logger.info(f"[V2] 开始处理: {query[:50]}")
         
@@ -982,7 +999,7 @@ class V2Agent:
                 
             elif tool_name == 'python_code':
                 # Python代码执行
-                result = self._tool_python_code(query, args)
+                result = self._tool_python_code(query, args, user_id=context.user_id, request_id=context.request_id)
                 result_summary = f"代码执行完成: {result.get('output', '')[:50]}"
                 context.add_evidence('python_execution', result)
                 
@@ -1340,7 +1357,7 @@ class V2Agent:
                 'success': False
             }
     
-    def _tool_python_code(self, query: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    def _tool_python_code(self, query: str, args: Dict[str, Any], user_id: Optional[str] = None, request_id: Optional[str] = None) -> Dict[str, Any]:
         """Python代码执行工具"""
         # 获取上传文件目录
         from app.routes.file_upload import get_upload_folder
@@ -1391,8 +1408,13 @@ class V2Agent:
                 'python_code': code
             }
         
-        # 执行代码（使用executor factory中的沙箱执行器，传入upload_dir）
-        exec_result = execute_python_code(code, context={'upload_dir': upload_dir})
+        # 执行代码（传入 user_id/request_id 以启用速率限制 + 审计）
+        exec_result = execute_python_code(
+            code,
+            user_id=user_id,
+            request_id=request_id,
+            context={'upload_dir': upload_dir},
+        )
         
         return {
             'code': code,

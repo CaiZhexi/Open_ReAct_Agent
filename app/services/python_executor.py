@@ -1,4 +1,5 @@
-"""Python代码安全执行器 - 白名单模式"""
+"""Python代码安全执行器 - 白名单模式（含 AST 兜底审计）"""
+import ast
 import math
 import statistics
 import datetime
@@ -112,7 +113,17 @@ class PythonExecutor:
         Returns:
             包含执行结果的字典
         """
-        # 严格的安全检查
+        # L0 兜底：AST 静态审计（H6：default 执行器也必须过 AST）
+        ast_ok, ast_reason = self._ast_safety_check(code)
+        if not ast_ok:
+            return {
+                'success': False,
+                'error': f"🛡️ 安全检查失败: {ast_reason}",
+                'output': '',
+                'execution_time': 0
+            }
+
+        # 严格的正则安全检查
         safety_check = self._check_code_safety(code)
         if not safety_check['safe']:
             return {
@@ -191,6 +202,35 @@ class PythonExecutor:
             sys.stdout = old_stdout
             stdout_buffer.close()
     
+    _AST_FORBIDDEN_DUNDERS = {
+        '__import__', '__builtins__', '__globals__', '__locals__',
+        '__code__', '__class__', '__base__', '__bases__', '__subclasses__',
+        '__mro__', '__dict__', '__getattribute__', '__setattr__', '__delattr__',
+        '__reduce__', '__reduce_ex__', '__class_getitem__', '__init_subclass__',
+        '__closure__', '__func__', '__wrapped__',
+    }
+    _AST_FORBIDDEN_BUILTINS = {
+        'eval', 'exec', 'compile', 'open', 'input', 'breakpoint',
+        'globals', 'locals', 'vars', 'dir', 'delattr',
+    }
+
+    def _ast_safety_check(self, code: str) -> (bool, str):
+        """AST 静态审计：作为正则兜底，拦截属性链和调用中的危险访问。"""
+        try:
+            tree = ast.parse(code, mode='exec')
+        except SyntaxError as e:
+            return False, f'语法错误: {e.msg} @ L{e.lineno}'
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute):
+                if node.attr in self._AST_FORBIDDEN_DUNDERS:
+                    return False, f'禁止访问危险属性: {node.attr}'
+            if isinstance(node, ast.Name) and node.id in self._AST_FORBIDDEN_BUILTINS:
+                # 允许作为字符串变量名/注释中出现；仅在名字引用为表达式时才拦截
+                parent_ok = False  # 简单起见，名字直接引用就拦截
+                if not parent_ok:
+                    return False, f'禁止使用危险内建: {node.id}'
+        return True, ''
+
     def _check_code_safety(self, code: str) -> Dict[str, Any]:
         """
         白名单模式的安全检查
@@ -243,8 +283,14 @@ class PythonExecutor:
         
         # 禁止__开头的特殊方法（防止访问内部对象）
         # 但允许常见的双下划线语法如 __name__
-        dangerous_dunders = ['__import__', '__builtins__', '__globals__', '__locals__',
-                            '__code__', '__class__', '__base__', '__subclasses__']
+        dangerous_dunders = [
+            '__import__', '__builtins__', '__globals__', '__locals__',
+            '__code__', '__class__', '__base__', '__bases__', '__subclasses__',
+            '__mro__', '__dict__', '__getattribute__', '__setattr__', '__delattr__',
+            '__reduce__', '__reduce_ex__', '__class_getitem__', '__init_subclass__',
+            '__closure__', '__func__', '__wrapped__',
+            'f_back', 'f_locals', 'f_globals', 'gi_frame', 'cr_frame',
+        ]
         for dunder in dangerous_dunders:
             if dunder in code:
                 return {

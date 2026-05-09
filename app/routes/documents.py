@@ -10,6 +10,7 @@ from app.models.vector_store import vector_manager
 from app.services.document_processor import document_processor
 from app.services.api_clients import embedding_client
 from app.services.document_queue import document_queue
+from app.utils.security import require_api_key, safe_basename, ensure_within, make_error_response
 
 # 创建蓝图
 doc_bp = Blueprint('documents', __name__, url_prefix='/api/docs')
@@ -38,10 +39,7 @@ def list_documents(kb_id):
         })
     
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'获取文档列表失败: {str(e)}'
-        }), 500
+        return make_error_response(e, public_message='获取文档列表失败')
 
 @doc_bp.route('/<int:doc_id>', methods=['GET'])
 def get_document(doc_id):
@@ -66,12 +64,10 @@ def get_document(doc_id):
         })
     
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'获取文档详情失败: {str(e)}'
-        }), 500
+        return make_error_response(e, public_message='获取文档详情失败')
 
 @doc_bp.route('/batch-upload/<int:kb_id>', methods=['POST'])
+@require_api_key
 def batch_upload_documents(kb_id):
     """批量上传文档到知识库"""
     try:
@@ -111,23 +107,20 @@ def batch_upload_documents(kb_id):
                     validation_errors.append("发现空文件名的文件")
                     continue
                 
-                # 自定义安全文件名处理（支持中文）
+                # 安全文件名处理（保留中文字符；强制 basename + 拒绝 ..）
                 def safe_filename(filename):
-                    """安全文件名处理，保留中文字符"""
                     import re
-                    # 移除危险字符，但保留中文、英文、数字、点、下划线、连字符、括号
                     safe_name = re.sub(r'[<>:"/\\|?*]', '_', filename)
-                    # 移除多余的空格
                     safe_name = ' '.join(safe_name.split())
-                    return safe_name.strip()
-                
+                    return safe_basename(safe_name.strip())
+
                 original_filename = safe_filename(file.filename)
                 if not original_filename:
                     validation_errors.append(f"{file.filename}: 文件名无效")
                     continue
-                
+
                 file_extension = original_filename.rsplit('.', 1)[1].lower() if '.' in original_filename else ''
-                
+
                 # 检查文件类型
                 if not file_extension:
                     validation_errors.append(f"文件 '{file.filename}' -> '{original_filename}': 缺少文件扩展名")
@@ -135,9 +128,12 @@ def batch_upload_documents(kb_id):
                 elif file_extension not in Config.ALLOWED_EXTENSIONS:
                     validation_errors.append(f"{original_filename}: 不支持的文件类型 '{file_extension}'，支持的类型：{', '.join(Config.ALLOWED_EXTENSIONS)}")
                     continue
-                
-                # 保存临时文件
+
+                # 保存临时文件，并确保结果路径仍在 temp_dir 内
                 temp_file_path = os.path.join(temp_dir, original_filename)
+                if not ensure_within(temp_dir, temp_file_path):
+                    validation_errors.append(f"{original_filename}: 非法路径")
+                    continue
                 file.save(temp_file_path)
                 
                 # 验证文件
@@ -209,12 +205,10 @@ def batch_upload_documents(kb_id):
             raise e
     
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'批量上传失败: {str(e)}'
-        }), 500
+        return make_error_response(e, public_message='批量上传失败')
 
 @doc_bp.route('/upload/<int:kb_id>', methods=['POST'])
+@require_api_key
 def upload_document(kb_id):
     """上传文档到知识库"""
     try:
@@ -241,7 +235,9 @@ def upload_document(kb_id):
             }), 400
         
         # 获取文件信息
-        original_filename = secure_filename(file.filename)
+        original_filename = safe_basename(secure_filename(file.filename))
+        if not original_filename:
+            return jsonify({'success': False, 'message': '无效的文件名'}), 400
         file_extension = original_filename.rsplit('.', 1)[1].lower() if '.' in original_filename else ''
         
         # 创建临时文件
@@ -322,12 +318,10 @@ def upload_document(kb_id):
                 os.unlink(temp_file_path)
     
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'文档上传失败: {str(e)}'
-        }), 500
+        return make_error_response(e, public_message='文档上传失败')
 
 @doc_bp.route('/create/<int:kb_id>', methods=['POST'])
+@require_api_key
 def create_text_document(kb_id):
     """创建文本文档"""
     try:
@@ -410,12 +404,10 @@ def create_text_document(kb_id):
         })
     
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'文档创建失败: {str(e)}'
-        }), 500
+        return make_error_response(e, public_message='文档创建失败')
 
 @doc_bp.route('/<int:doc_id>/update', methods=['PUT'])
+@require_api_key
 def update_document(doc_id):
     """更新文档"""
     try:
@@ -493,12 +485,10 @@ def update_document(doc_id):
         })
     
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'文档更新失败: {str(e)}'
-        }), 500
+        return make_error_response(e, public_message='文档更新失败')
 
 @doc_bp.route('/<int:doc_id>/delete', methods=['DELETE'])
+@require_api_key
 def delete_document(doc_id):
     """删除文档"""
     try:
@@ -529,10 +519,7 @@ def delete_document(doc_id):
             }), 500
     
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'文档删除失败: {str(e)}'
-        }), 500
+        return make_error_response(e, public_message='文档删除失败')
 
 @doc_bp.route('/<int:doc_id>/chunks', methods=['GET'])
 def get_document_chunks(doc_id):
@@ -563,10 +550,7 @@ def get_document_chunks(doc_id):
         })
     
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'获取文档块失败: {str(e)}'
-        }), 500
+        return make_error_response(e, public_message='获取文档块失败')
 
 @doc_bp.route('/processing-status/<int:kb_id>', methods=['GET'])
 def get_processing_status(kb_id):
@@ -599,7 +583,4 @@ def get_processing_status(kb_id):
         })
     
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'获取处理状态失败: {str(e)}'
-        }), 500
+        return make_error_response(e, public_message='获取处理状态失败')

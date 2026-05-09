@@ -111,16 +111,24 @@ def _set_resource_limits(cfg: ExecutionConfig):
 
 _FORBIDDEN_BUILTINS: Set[str] = {
     "eval", "exec", "compile", "open", "input", "breakpoint",
-    "globals", "locals", "vars", "dir", "delattr", "__import__"
+    "globals", "locals", "vars", "dir", "delattr", "__import__",
+    "memoryview",
 }
+# 沙箱逃逸 gadget 覆盖：保留常用生命周期 dunder，其余攻击面一律禁止
 _FORBIDDEN_DUNDERS: Set[str] = {
     "__subclasses__", "__mro__", "__bases__", "__dict__", "__class__",
-    "__globals__", "__code__", "__getattribute__", "__setattr__", "__delattr__"
+    "__globals__", "__code__", "__getattribute__", "__setattr__", "__delattr__",
+    "__reduce__", "__reduce_ex__", "__class_getitem__", "__init_subclass__",
+    "__base__", "__closure__", "__func__", "__self__", "__wrapped__",
+    "__qualname__", "__module__", "__builtins__",
+    "f_back", "f_locals", "f_globals", "gi_frame", "cr_frame",
 }
 _FORBIDDEN_MODULES: Set[str] = {
     "subprocess", "signal", "ctypes",
     "pickle", "marshal", "imp", "importlib",
-    "socket", "ssl", "http", "urllib", "requests"
+    "socket", "ssl", "http", "urllib", "requests",
+    "httpx", "aiohttp", "paramiko", "ftplib", "smtplib",
+    "telnetlib", "xmlrpc",
 }
 # os 和 os.path 在白名单中是允许的，所以不应该完全禁止
 _FORBIDDEN_STR_HINTS: Tuple[str, ...] = (
@@ -222,11 +230,34 @@ def _create_safe_open(sandbox_dir: str, allow_write: bool):
 
 # ===================== 子进程执行体 =====================
 
+def _disable_network_in_child():
+    """让沙箱子进程无法发起网络请求。
+    通过 monkey-patch socket.socket/create_connection/getaddrinfo。
+    注意：这无法防住 ctypes 直连 syscall，但对标准 Python 库已经足够。
+    """
+    try:
+        import socket as _socket
+
+        def _blocked(*args, **kwargs):
+            raise PermissionError('网络访问已在沙箱中被禁用')
+
+        _socket.socket = _blocked  # type: ignore
+        _socket.create_connection = _blocked  # type: ignore
+        _socket.getaddrinfo = _blocked  # type: ignore
+        _socket.gethostbyname = _blocked  # type: ignore
+    except Exception:
+        pass
+
+
 def _execute_in_child(code: str, cfg: ExecutionConfig, queue: multiprocessing.Queue, sandbox_dir: Optional[str], context: Dict[str, Any] = None):
     from config import Config
     start_cwd = os.getcwd()
     try:
         _set_resource_limits(cfg)
+
+        # 网络禁用（SSRF 防护）
+        if getattr(Config, 'PYTHON_EXECUTOR_DISABLE_NETWORK', True):
+            _disable_network_in_child()
 
         # 环境净化
         if cfg.sanitize_env:
@@ -368,10 +399,49 @@ class ProcessIsolatedExecutor:
         start = time.time()
         # 使用临时目录作为沙箱
         sandbox_dir = tempfile.mkdtemp(prefix="python_sandbox_") if self.config.enable_sandbox else None
+
+        # 如果上游传入了 upload_dir，把其中的文件复制到 sandbox 内（M1/H2 关键防护）
+        # 这样即便底层 C 扩展绕过 safe_open，也只能读取沙箱副本，读不到宿主机敏感文件。
+        prepared_context = dict(context or {})
+        if sandbox_dir and prepared_context.get('upload_dir'):
+            try:
+                from config import Config as _Cfg
+                src_dir = prepared_context['upload_dir']
+                max_files = getattr(_Cfg, 'PYTHON_EXECUTOR_SANDBOX_MAX_FILES', 32)
+                max_bytes = getattr(_Cfg, 'PYTHON_EXECUTOR_SANDBOX_MAX_FILE_BYTES', 64 * 1024 * 1024)
+                copied = 0
+                if os.path.isdir(src_dir):
+                    import shutil
+                    for name in os.listdir(src_dir):
+                        # 只复制常规数据文件，避免把系统文件 symlink 也拉进来
+                        if name.startswith('.'):
+                            continue
+                        src_path = os.path.join(src_dir, name)
+                        # 拒绝符号链接跳板
+                        if os.path.islink(src_path):
+                            continue
+                        if not os.path.isfile(src_path):
+                            continue
+                        try:
+                            size = os.path.getsize(src_path)
+                        except OSError:
+                            continue
+                        if size > max_bytes:
+                            continue
+                        shutil.copy2(src_path, os.path.join(sandbox_dir, os.path.basename(name)))
+                        copied += 1
+                        if copied >= max_files:
+                            break
+                # 把 upload_dir 指向沙箱内目录，阻断逃逸
+                prepared_context['upload_dir'] = sandbox_dir
+            except Exception:
+                # 隔离失败时直接把 upload_dir 指向沙箱空目录，确保不会回退到宿主路径
+                prepared_context['upload_dir'] = sandbox_dir
+
         q: multiprocessing.Queue = multiprocessing.Queue()
         p = multiprocessing.Process(
             target=_execute_in_child,
-            args=(code, self.config, q, sandbox_dir, context),
+            args=(code, self.config, q, sandbox_dir, prepared_context),
             daemon=True
         )
         try:

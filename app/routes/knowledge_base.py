@@ -3,6 +3,7 @@ from flask import Blueprint, request, jsonify
 from app.models.database import DatabaseManager
 from app.models.vector_store import vector_manager
 from app.services.document_queue import document_queue
+from app.utils.security import require_api_key, make_error_response
 
 # 创建蓝图
 kb_bp = Blueprint('knowledge_base', __name__, url_prefix='/api/kb')
@@ -53,12 +54,10 @@ def list_knowledge_bases():
         })
     
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'获取知识库列表失败: {str(e)}'
-        }), 500
+        return make_error_response(e, public_message='获取知识库列表失败')
 
 @kb_bp.route('/create', methods=['POST'])
+@require_api_key
 def create_knowledge_base():
     """创建知识库"""
     try:
@@ -101,10 +100,7 @@ def create_knowledge_base():
         })
     
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'创建知识库失败: {str(e)}'
-        }), 500
+        return make_error_response(e, public_message='创建知识库失败')
 
 @kb_bp.route('/<int:kb_id>', methods=['GET'])
 def get_knowledge_base(kb_id):
@@ -134,12 +130,10 @@ def get_knowledge_base(kb_id):
         })
     
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'获取知识库详情失败: {str(e)}'
-        }), 500
+        return make_error_response(e, public_message='获取知识库详情失败')
 
 @kb_bp.route('/<int:kb_id>/update', methods=['PUT'])
+@require_api_key
 def update_knowledge_base(kb_id):
     """更新知识库信息"""
     try:
@@ -190,12 +184,10 @@ def update_knowledge_base(kb_id):
         })
     
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'更新知识库失败: {str(e)}'
-        }), 500
+        return make_error_response(e, public_message='更新知识库失败')
 
 @kb_bp.route('/<int:kb_id>/delete', methods=['DELETE'])
+@require_api_key
 def delete_knowledge_base(kb_id):
     """删除知识库"""
     try:
@@ -225,10 +217,7 @@ def delete_knowledge_base(kb_id):
             }), 500
     
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'删除知识库失败: {str(e)}'
-        }), 500
+        return make_error_response(e, public_message='删除知识库失败')
 
 @kb_bp.route('/<int:kb_id>/stats', methods=['GET'])
 def get_knowledge_base_stats(kb_id):
@@ -269,12 +258,10 @@ def get_knowledge_base_stats(kb_id):
         })
     
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'获取统计信息失败: {str(e)}'
-        }), 500
+        return make_error_response(e, public_message='获取统计信息失败')
 
 @kb_bp.route('/<int:kb_id>/force-stop', methods=['POST'])
+@require_api_key
 def force_stop_kb_processing(kb_id):
     """强制停止知识库处理"""
     try:
@@ -298,7 +285,4 @@ def force_stop_kb_processing(kb_id):
         })
     
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'停止处理失败: {str(e)}'
-        }), 500
+        return make_error_response(e, public_message='停止处理失败')

@@ -1,0 +1,27 @@
+# 安全审计后版本上调：Flask/Flask-CORS/pypdf/requests 修复了多项 CVE
+Flask>=3.0.3,<4.0
+Flask-CORS>=5.0.1,<7
+requests>=2.32.3,<3
+numpy>=1.26.0,<2.1
+faiss-cpu>=1.8.0
+sentence-transformers>=2.7.0
+python-dotenv>=1.0.0
+jieba>=0.42.1
+pypdf>=5.0.0
+python-docx>=1.1.2
+openpyxl>=3.1.5
+pytz>=2024.1
+
+# 数学和科学计算库（用于Python代码解释器）
+scipy>=1.11.0
+mpmath>=1.3.0
+pandas>=2.0.0
+statsmodels>=0.14.0
+scikit-learn>=1.3.0
+matplotlib>=3.7.0
+plotly>=5.17.0
+plotnine>=0.12.0
+sympy>=1.12
+numpy-financial>=1.0.0
+xarray>=2023.8.0
+geopandas>=0.14.0

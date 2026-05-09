@@ -11,6 +11,7 @@ from datetime import datetime
 from app.services.v2_agent import v2_agent
 from app.models.database import DatabaseManager
 from app.services.io_logger import get_logger
+from app.utils.security import require_api_key, make_error_response
 
 rag_v2_bp = Blueprint('rag_v2', __name__)
 
@@ -19,6 +20,7 @@ db_manager = DatabaseManager()
 
 
 @rag_v2_bp.route('/v2/chat', methods=['POST'])
+@require_api_key
 def v2_chat():
     """
     V2 Agentic RAG 接口 - 增量式上下文迭代
@@ -68,11 +70,14 @@ def v2_chat():
             'history_length': len(history),
             'selected_files': selected_files
         })
-        
+
+        # user_id 用于速率限制 / 审计；优先 X-API-Key 派生，其次 remote_addr
+        user_id = request.headers.get('X-API-Key') or request.remote_addr or 'anonymous'
+
         # 流式响应
         if use_stream:
             return Response(
-                stream_with_context(_stream_v2_chat(query, kb_ids, kb_names, request_id, history, selected_files)),
+                stream_with_context(_stream_v2_chat(query, kb_ids, kb_names, request_id, history, selected_files, user_id)),
                 mimetype='text/event-stream',
                 headers={
                     'Cache-Control': 'no-cache',
@@ -82,7 +87,7 @@ def v2_chat():
             )
         # 非流式响应
         else:
-            result = v2_agent.run(query, kb_ids, kb_names, history, selected_files)
+            result = v2_agent.run(query, kb_ids, kb_names, history, selected_files, user_id=user_id, request_id=request_id)
             # 添加request_id到结果中
             result['request_id'] = request_id
             # 结束记录请求日志
@@ -90,27 +95,20 @@ def v2_chat():
             return jsonify(result)
             
     except Exception as e:
-        print(f"V2 Chat 错误: {e}")
-        import traceback
-        traceback.print_exc()
-        
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return make_error_response(e, public_message='V2 Chat 失败')
 
 
-def _stream_v2_chat(query: str, kb_ids: list, kb_names: dict, request_id: str = None, history: list = None, selected_files: list = None):
+def _stream_v2_chat(query: str, kb_ids: list, kb_names: dict, request_id: str = None, history: list = None, selected_files: list = None, user_id: str = None):
     """流式生成V2响应"""
     io_logger = get_logger()
-    
+
     try:
         step = 0
         iteration = 0  # 迭代轮次
         final_answer = ""  # 保存答案
         final_result = None  # 保存最终结果
-        
-        for event in v2_agent.run_stream(query, kb_ids, kb_names, history, selected_files):
+
+        for event in v2_agent.run_stream(query, kb_ids, kb_names, history, selected_files, user_id=user_id, request_id=request_id):
             event_type = event.get('event')
             event_data = event.get('data', {})
             
@@ -258,12 +256,11 @@ def _stream_v2_chat(query: str, kb_ids: list, kb_names: dict, request_id: str = 
             io_logger.end_request(request_id, final_result)
             
     except Exception as e:
-        print(f"流式处理错误: {e}")
-        import traceback
-        traceback.print_exc()
-        
-        # 发送错误事件
-        yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+        import logging, uuid
+        error_id = uuid.uuid4().hex[:12]
+        logging.getLogger(__name__).exception('v2_stream_error error_id=%s', error_id)
+        # 前端只看到 error_id，不泄漏堆栈
+        yield f"data: {json.dumps({'type': 'error', 'message': 'Internal error', 'error_id': error_id}, ensure_ascii=False)}\n\n"
 
 
 def _get_tool_display_name(tool: str) -> str:
@@ -385,12 +382,7 @@ def download_llm_io(request_id):
         return response
         
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return make_error_response(e, public_message='下载 LLM IO 失败')
 
 
 def _format_llm_io_to_markdown(request_id, logs):

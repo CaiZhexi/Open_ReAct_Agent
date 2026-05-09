@@ -6,6 +6,12 @@ from app.models.database import DatabaseManager
 from app.models.vector_store import vector_manager
 from app.services.api_clients import embedding_client, chat_client, rerank_client
 from app.services.tools import tool_registry
+from app.utils.security import (
+    require_api_key,
+    make_error_response,
+    quote_untrusted,
+    UNTRUSTED_INSTRUCTION,
+)
 
 # 创建蓝图
 rag_bp = Blueprint('rag', __name__, url_prefix='/api/rag')
@@ -14,6 +20,7 @@ rag_bp = Blueprint('rag', __name__, url_prefix='/api/rag')
 db_manager = DatabaseManager()
 
 @rag_bp.route('/agentic-chat', methods=['POST'])
+@require_api_key
 def agentic_chat():
     """Agentic RAG问答接口（Lite模式）"""
     try:
@@ -73,8 +80,9 @@ def agentic_chat():
         # 根据是否流式响应选择不同的处理方式
         if stream:
             # Lite 模式流式响应
+            user_id = request.headers.get('X-API-Key') or request.remote_addr or 'anonymous'
             return Response(
-                _generate_lite_streaming_response(question, valid_kb_ids),
+                _generate_lite_streaming_response(question, valid_kb_ids, user_id=user_id),
                 mimetype='text/event-stream'
             )
         else:
@@ -85,12 +93,10 @@ def agentic_chat():
             }), 400
     
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'Agentic RAG问答失败: {str(e)}'
-        }), 500
+        return make_error_response(e, public_message='Agentic RAG问答失败')
 
 @rag_bp.route('/chat', methods=['POST'])
+@require_api_key
 def chat():
     """RAG问答接口"""
     try:
@@ -182,12 +188,13 @@ def chat():
                 'message': '未找到相关内容'
             })
         
-        # 构建上下文
+        # 构建上下文（包裹进 <untrusted_source> 标签以对抗 prompt injection）
         context_parts = []
         sources = []
-        
+
         for i, result in enumerate(top_results, 1):
-            context_parts.append(f"参考资料{i}：{result['content']}")
+            wrapped = quote_untrusted(result['content'], tag='untrusted_source', max_len=4000)
+            context_parts.append(f"参考资料{i}：\n{wrapped}")
             sources.append({
                 'chunk_id': result['chunk_id'],
                 'content': result['content'][:200] + '...' if len(result['content']) > 200 else result['content'],
@@ -211,6 +218,8 @@ def chat():
 2. 如果参考资料中没有相关信息，请明确说明
 3. 回答要简洁明了
 4. 在回答末尾标明主要参考了哪些资料
+
+{UNTRUSTED_INSTRUCTION}
 
 ⏰ 【当前系统时间】
 北京时间：{current_time}
@@ -248,10 +257,7 @@ def chat():
             })
     
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'问答失败: {str(e)}'
-        }), 500
+        return make_error_response(e, public_message='问答失败')
 
 def _generate_streaming_response(messages: List[Dict[str, str]], sources: List[Dict], question: str):
     """生成流式响应"""
@@ -273,9 +279,9 @@ def _generate_streaming_response(messages: List[Dict[str, str]], sources: List[D
     except Exception as e:
         yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
 
-def _generate_lite_streaming_response(question: str, kb_ids: List[int]):
+def _generate_lite_streaming_response(question: str, kb_ids: List[int], user_id: str = None):
     """生成 Lite 模式流式响应
-    
+
     Lite 模式工作流：Plan → Execute → Answer（流式）
     """
     try:
@@ -307,7 +313,7 @@ def _generate_lite_streaming_response(question: str, kb_ids: List[int]):
         
         # 调用 Lite 调度器的流式方法（传递request_id）
         final_result = None
-        for event in lite_dispatcher.dispatch_stream(question, kb_ids, kb_names, request_id):
+        for event in lite_dispatcher.dispatch_stream(question, kb_ids, kb_names, request_id, user_id=user_id):
             event_type = event.get('event')
             event_data = event.get('data', {})
             
@@ -513,10 +519,7 @@ def search_knowledge():
         })
     
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'搜索失败: {str(e)}'
-        }), 500
+        return make_error_response(e, public_message='搜索失败')
 
 @rag_bp.route('/rerank', methods=['POST'])
 def rerank_documents():
@@ -565,10 +568,7 @@ def rerank_documents():
         })
     
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'重排失败: {str(e)}'
-        }), 500
+        return make_error_response(e, public_message='重排失败')
 
 @rag_bp.route('/tools', methods=['GET'])
 def list_tools():
@@ -602,10 +602,7 @@ def list_tools():
         })
     
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'获取工具列表失败: {str(e)}'
-        }), 500
+        return make_error_response(e, public_message='获取工具列表失败')
 
 @rag_bp.route('/tools/stats', methods=['GET'])
 def get_tool_stats():
@@ -631,10 +628,7 @@ def get_tool_stats():
         })
     
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'获取统计信息失败: {str(e)}'
-        }), 500
+        return make_error_response(e, public_message='获取统计信息失败')
 
 @rag_bp.route('/tools/<tool_name>/enable', methods=['POST'])
 def enable_tool(tool_name):
@@ -654,10 +648,7 @@ def enable_tool(tool_name):
         })
     
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'启用工具失败: {str(e)}'
-        }), 500
+        return make_error_response(e, public_message='启用工具失败')
 
 @rag_bp.route('/tools/<tool_name>/disable', methods=['POST'])
 def disable_tool(tool_name):
@@ -677,7 +668,4 @@ def disable_tool(tool_name):
         })
     
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'禁用工具失败: {str(e)}'
-        }), 500
+        return make_error_response(e, public_message='禁用工具失败')
