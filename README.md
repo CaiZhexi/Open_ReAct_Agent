@@ -277,6 +277,40 @@ SEARCH_API_URL=https://metaso.cn/api/v1/search
 
 ## ⚙️ 系统配置
 
+### 🔐 安全配置（必读）
+
+> 项目在 2026/05 完成了一次全面安全加固（详见 `SECURITY.md` / commit `05e6333`）。以下环境变量是**部署前必须检查**的项：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `SECRET_KEY` | 无 | **必填**，长度 ≥ 32 的强随机字符串。未设置或使用默认占位符时**拒绝启动**。生成：`python -c "import secrets; print(secrets.token_urlsafe(48))"`。开发环境可用 `DEV_MODE=true` 生成临时随机 key |
+| `FLASK_DEBUG` | `False` | 生产必须保持 False；Werkzeug debug console 存在远程代码执行风险 |
+| `HOST` | `127.0.0.1` | 默认仅绑定本机环回。要对外暴露需显式 `export HOST=0.0.0.0`，且务必配合鉴权 + 前置反代/防火墙 |
+| `PORT` | `5004` | 服务端口 |
+| `CORS_ORIGINS` | 仅 `127.0.0.1:5004` / `localhost:5004` | 逗号分隔的可信来源白名单，如 `https://your.example.com` |
+| `APP_API_KEY` | 无 | 设置后所有写接口（`/api/v2/chat`、`/clear_files`、`/delete_file`、`/kb/*/delete`、文档上传等）强制校验 `X-API-Key` 头。生产强烈建议设置 |
+| `IO_LOG_KEEP_RAW` | `false` | 是否把 LLM 的 `raw_request/raw_response` 落盘（仍会脱敏）。生产不建议开启 |
+| `PYTHON_EXECUTOR_DISABLE_NETWORK` | `true` | 沙箱子进程禁用 `socket` 相关调用，防 SSRF |
+| `PYTHON_EXECUTOR_SANDBOX_ALLOW_OPEN` | `true` | 允许沙箱内 `open()`；上传的文件会先复制进沙箱，只能访问副本，读不到宿主文件 |
+
+### 多层安全防御一览
+
+- **API Key / Authorization / Cookie 等 header 落盘前自动脱敏**（`<redacted>`）；LLM `messages` 按敏感字段递归脱敏
+- **写接口强制鉴权**（`APP_API_KEY` 设置后生效），CORS 仅放白名单 origin
+- **Python 执行器**：AST 静态审计（禁用 `__reduce__` / `__class_getitem__` / `__subclasses__` 等逃逸 gadget）→ 正则审计 → 进程隔离 → 资源限额 → 沙箱目录 → 禁网
+- **uploads 文件复制进沙箱**：即便底层 C 扩展绕过 safe_open，也只能读沙箱副本
+- **Prompt Injection 防御**：外部检索结果用 `<untrusted_source>` 包裹，system prompt 声明忽略其中指令
+- **统一错误响应**：前端只看到 `error_id`，详细栈仅进日志
+- **速率限制**：每用户每分钟 20 次 / 每小时 100 次 Python 执行，全局 100/分钟
+
+### 回归测试
+
+```bash
+SECRET_KEY=$(python -c "import secrets;print(secrets.token_urlsafe(48))") \
+  ./venv/bin/python -m unittest tests.test_security_regression -v
+# 21 tests — 覆盖脱敏 / 沙箱 / AST / 鉴权 / CORS / prompt 包裹 / path traversal / foreign_keys
+```
+
 ### 核心配置（config.py）
 
 **文档处理配置**：
